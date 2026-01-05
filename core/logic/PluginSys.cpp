@@ -2150,18 +2150,16 @@ void CPluginManager::OnRootConsoleCommand(const char *cmdname, const ICommandArg
                     // 处理 cmd 块 (新逻辑)
                     else if (m_inCmdSection)
                     {
-                        // 在SMC中， "sm plugins load test" 这样的一行，
-                        // key 会是 "sm plugins load test"，而 value 通常为 NULL 或 ""
                         char cmdBuffer[256];
                         if (value && value[0] != '\0')
                         {
-                            // 如果用户写的是 "command" "args" 格式，这里把它拼起来
-                            ke::SafeSprintf(cmdBuffer, sizeof(cmdBuffer), "%s %s", key, value);
+                            // 格式化为 "key value\n"
+                            ke::SafeSprintf(cmdBuffer, sizeof(cmdBuffer), "%s %s\n", key, value);
                         }
                         else
                         {
-                            // 如果用户写的是 "sm plugins load test" 格式，直接存 key
-                            ke::SafeStrcpy(cmdBuffer, sizeof(cmdBuffer), key);
+                            // 格式化为 "key\n"
+                            ke::SafeSprintf(cmdBuffer, sizeof(cmdBuffer), "%s\n", key);
                         }
                         m_generalCommands.push_back(cmdBuffer);
                     }
@@ -2240,7 +2238,7 @@ void CPluginManager::OnRootConsoleCommand(const char *cmdname, const ICommandArg
             const auto &generalCommands = handler.GetGeneralCommands();
             for (const auto &cmdStr : generalCommands)
             {
-                engine->ServerCommand("%s\n", cmdStr.c_str());
+                engine->ServerCommand(cmdStr.c_str());
             }
 
             // 3. 执行 cfg 块中的参数 (Execute Config CVars)
