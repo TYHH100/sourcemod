@@ -2086,7 +2086,8 @@ void CPluginManager::OnRootConsoleCommand(const char *cmdname, const ICommandArg
             {
             public:
                 ModeGroupSMCHandler(const char *targetMode, CPluginManager *pluginManager)
-                    : m_targetMode(targetMode), m_pluginManager(pluginManager), m_inTargetMode(false), m_inCfgSection(false), m_foundMode(false)
+                    : m_targetMode(targetMode), m_pluginManager(pluginManager), 
+                      m_inTargetMode(false), m_inCfgSection(false), m_inCmdSection(false), m_foundMode(false)
                 {
                 }
 
@@ -2095,9 +2096,11 @@ void CPluginManager::OnRootConsoleCommand(const char *cmdname, const ICommandArg
                     m_currentModeName.clear();
                     m_inTargetMode = false;
                     m_inCfgSection = false;
+                    m_inCmdSection = false; // 重置状态
                     m_foundMode = false;
                     m_groupPath.clear();
                     m_configCommands.clear();
+                    m_generalCommands.clear(); // 清空命令列表
                 }
 
                 SMCResult ReadSMC_NewSection(const SMCStates *states, const char *name) override
@@ -2107,6 +2110,12 @@ void CPluginManager::OnRootConsoleCommand(const char *cmdname, const ICommandArg
                         if (strcmp(name, "cfg") == 0)
                         {
                             m_inCfgSection = true;
+                            return SMCResult_Continue;
+                        }
+                        // 检测 cmd 块
+                        else if (strcmp(name, "cmd") == 0 || strcmp(name, "cmds") == 0)
+                        {
+                            m_inCmdSection = true;
                             return SMCResult_Continue;
                         }
                     }
@@ -2124,28 +2133,44 @@ void CPluginManager::OnRootConsoleCommand(const char *cmdname, const ICommandArg
 
                 SMCResult ReadSMC_KeyValue(const SMCStates *states, const char *key, const char *value) override
                 {
-                    if (m_inTargetMode)
+                    if (!m_inTargetMode)
+                        return SMCResult_Continue;
+
+                    // 处理 cfg 块 (原逻辑)
+                    if (m_inCfgSection)
                     {
-                        if (m_inCfgSection)
-                        {
-                            if (value)
-                            {
-                                char cmdBuffer[256];
-                                ke::SafeSprintf(cmdBuffer, sizeof(cmdBuffer), "%s %s\n", key, value);
-                                m_configCommands.push_back(cmdBuffer);
-                            }
-                            else
-                            {
-                                char cmdBuffer[256];
-                                ke::SafeSprintf(cmdBuffer, sizeof(cmdBuffer), "%s\n", key);
-                                m_configCommands.push_back(cmdBuffer);
-                            }
-                        }
-                        else if (strcmp(key, "group") == 0 && value)
-                        {
-                            m_groupPath = value;
-                        }
+                        char cmdBuffer[256];
+                        if (value && value[0] != '\0')
+                            ke::SafeSprintf(cmdBuffer, sizeof(cmdBuffer), "%s %s\n", key, value);
+                        else
+                            ke::SafeSprintf(cmdBuffer, sizeof(cmdBuffer), "%s\n", key);
+                        
+                        m_configCommands.push_back(cmdBuffer);
                     }
+                    // 处理 cmd 块 (新逻辑)
+                    else if (m_inCmdSection)
+                    {
+                        // 在SMC中， "sm plugins load test" 这样的一行，
+                        // key 会是 "sm plugins load test"，而 value 通常为 NULL 或 ""
+                        char cmdBuffer[256];
+                        if (value && value[0] != '\0')
+                        {
+                            // 如果用户写的是 "command" "args" 格式，这里把它拼起来
+                            ke::SafeSprintf(cmdBuffer, sizeof(cmdBuffer), "%s %s", key, value);
+                        }
+                        else
+                        {
+                            // 如果用户写的是 "sm plugins load test" 格式，直接存 key
+                            ke::SafeStrcpy(cmdBuffer, sizeof(cmdBuffer), key);
+                        }
+                        m_generalCommands.push_back(cmdBuffer);
+                    }
+                    // 处理 group 路径
+                    else if (strcmp(key, "group") == 0 && value)
+                    {
+                        m_groupPath = value;
+                    }
+                    
                     return SMCResult_Continue;
                 }
 
@@ -2154,6 +2179,10 @@ void CPluginManager::OnRootConsoleCommand(const char *cmdname, const ICommandArg
                     if (m_inCfgSection)
                     {
                         m_inCfgSection = false;
+                    }
+                    else if (m_inCmdSection)
+                    {
+                        m_inCmdSection = false;
                     }
                     else if (m_inTargetMode)
                     {
@@ -2165,6 +2194,7 @@ void CPluginManager::OnRootConsoleCommand(const char *cmdname, const ICommandArg
                 bool FoundMode() const { return m_foundMode; }
                 const std::string &GetGroupPath() const { return m_groupPath; }
                 const std::vector<std::string> &GetConfigCommands() const { return m_configCommands; }
+                const std::vector<std::string> &GetGeneralCommands() const { return m_generalCommands; }
 
             private:
                 const char *m_targetMode;
@@ -2172,9 +2202,11 @@ void CPluginManager::OnRootConsoleCommand(const char *cmdname, const ICommandArg
                 std::string m_currentModeName;
                 bool m_inTargetMode;
                 bool m_inCfgSection;
+                bool m_inCmdSection; // 新增标记
                 bool m_foundMode;
                 std::string m_groupPath;
                 std::vector<std::string> m_configCommands;
+                std::vector<std::string> m_generalCommands; // 新增存储
             };
 
             ModeGroupSMCHandler handler(modeName, this);
@@ -2195,6 +2227,7 @@ void CPluginManager::OnRootConsoleCommand(const char *cmdname, const ICommandArg
                 return;
             }
 
+            // 1. 卸载旧插件 (Unload Plugins)
             static char s_CurrentGroupPath[PLATFORM_MAX_PATH] = "";
             if (s_CurrentGroupPath[0] != '\0')
             {
@@ -2202,12 +2235,23 @@ void CPluginManager::OnRootConsoleCommand(const char *cmdname, const ICommandArg
                 rootmenu->ConsolePrint("[SM] Unloaded %d plugins from %s", num, s_CurrentGroupPath);
             }
 
-            const auto &configCommands = handler.GetConfigCommands();
-            for (const auto &cmd : configCommands)
+            // 2. 执行 cmd 块中的命令 (Execute General Commands)
+            // 建议放在加载新插件之前，这样可以清理环境，或者设置依赖
+            const auto &generalCommands = handler.GetGeneralCommands();
+            for (const auto &cmdStr : generalCommands)
             {
-                engine->ServerCommand(cmd.c_str());
+                engine->ServerCommand("%s\n", cmdStr.c_str());
             }
 
+            // 3. 执行 cfg 块中的参数 (Execute Config CVars)
+            // 也可以放在加载插件之后，看你具体需求。原代码逻辑是先执行配置。
+            const auto &configCommands = handler.GetConfigCommands();
+            for (const auto &cmdStr : configCommands)
+            {
+                engine->ServerCommand(cmdStr.c_str());
+            }
+
+            // 4. 加载新插件 (Load New Plugins)
             const std::string &groupPath = handler.GetGroupPath();
             if (!groupPath.empty())
             {
