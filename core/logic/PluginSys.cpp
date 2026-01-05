@@ -995,14 +995,14 @@ IPlugin *CPluginManager::LoadPlugin(const char *path, bool debug, PluginType typ
 		ke::SafeStrcpy(error, maxlength, "Cannot load plugins outside the \"plugins\" folder");
 		return NULL;
 	}
-/*
+
 	const char *ext = libsys->GetFileExtension(path);
 	if (!ext || strcmp(ext, "smx") != 0)
 	{
 		ke::SafeStrcpy(error, maxlength, "Plugin files must have the \".smx\" file extension");
 		return NULL;
 	}
-*/
+
 	if ((res=LoadPlugin(&pl, path, true, PluginType_MapUpdated)) == LoadRes_Failure)
 	{
 		ke::SafeStrcpy(error, maxlength, pl->GetErrorMsg());
@@ -2104,7 +2104,7 @@ void CPluginManager::OnRootConsoleCommand(const char *cmdname, const ICommandArg
                 {
                     if (m_inTargetMode)
                     {
-                        if (strcmp(name, "cfg") == 0)
+                        if (strcmp(name, "cmd") == 0)
                         {
                             m_inCfgSection = true;
                             return SMCResult_Continue;
@@ -2141,7 +2141,7 @@ void CPluginManager::OnRootConsoleCommand(const char *cmdname, const ICommandArg
                                 m_configCommands.push_back(cmdBuffer);
                             }
                         }
-                        else if (strcmp(key, "group") == 0 && value)
+                        else if (strcmp(key, "plugin_directory") == 0 && value)
                         {
                             m_groupPath = value;
                         }
