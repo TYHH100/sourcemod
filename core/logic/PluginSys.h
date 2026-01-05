@@ -332,6 +332,7 @@ public: //IScriptManager
 								size_t maxlength,
 								bool *wasloaded);
 	bool UnloadPlugin(IPlugin *plugin);
+	int UnloadPluginsByPath(const char *path_prefix);
 	IPlugin *FindPluginByContext(const sp_context_t *ctx);
 	unsigned int GetPluginCount();
 	IPluginIterator *GetPluginIterator();
