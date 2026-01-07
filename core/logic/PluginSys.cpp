@@ -47,6 +47,7 @@
 #include <amtl/am-string.h>
 #include <bridge/include/IVEngineServerBridge.h>
 #include <bridge/include/CoreProvider.h>
+#include "YAMLConfigParser.h"
 
 #define SOURCEMOD_PLUGINAPI_VERSION     7
 
@@ -847,6 +848,8 @@ CPluginManager::CPluginManager()
 	m_LoadingLocked = false;
 
 	m_bBlockBadPlugins = true;
+	m_yamlConfigLoaded = false;
+	m_currentMode[0] = '\0';
 }
 
 CPluginManager::~CPluginManager()
@@ -1036,6 +1039,12 @@ IPlugin *CPluginManager::LoadPlugin(const char *path, bool debug, PluginType typ
 
 void CPluginManager::LoadAutoPlugin(const char *plugin)
 {
+	// Check if plugin should be loaded based on YAML configuration
+	if (!ShouldLoadPlugin(plugin)) {
+		g_Logger.LogMessage("[SM] Skipping plugin "%s" based on mode configuration", plugin);
+		return;
+	}
+
 	CPlugin *pl = NULL;
 	LoadRes res;
 	if ((res=LoadPlugin(&pl, plugin, false, PluginType_MapUpdated)) == LoadRes_Failure)
@@ -1600,6 +1609,9 @@ void CPluginManager::OnSourceModAllInitialized()
 	m_pOnLibraryAdded = forwardsys->CreateForward("OnLibraryAdded", ET_Ignore, 1, NULL, Param_String);
 	m_pOnLibraryRemoved = forwardsys->CreateForward("OnLibraryRemoved", ET_Ignore, 1, NULL, Param_String);
 	m_pOnNotifyPluginUnloaded = forwardsys->CreateForward("OnNotifyPluginUnloaded", ET_Ignore, 1, NULL, Param_Cell);
+
+	// Load YAML mode group configuration
+	LoadModeGroupConfig();
 }
 
 void CPluginManager::OnSourceModShutdown()
@@ -2079,6 +2091,7 @@ void CPluginManager::OnRootConsoleCommand(const char *cmdname, const ICommandArg
 	rootmenu->DrawGenericOption("reload", "Reloads a plugin");
 	rootmenu->DrawGenericOption("unload", "Unload a plugin");
 	rootmenu->DrawGenericOption("unload_all", "Unloads all plugins");
+	rootmenu->DrawGenericOption("mode", "Set/get current mode (for YAML config)");
 }
 
 bool CPluginManager::ReloadPlugin(CPlugin *pl, bool print)
@@ -2300,6 +2313,67 @@ void CPluginManager::ForEachPlugin(ke::Function<void(CPlugin *)> callback)
 {
 	for (PluginIter iter(m_plugins); !iter.done(); iter.next())
 		callback(*iter);
+}
+
+void CPluginManager::LoadModeGroupConfig()
+{
+	char path[PLATFORM_MAX_PATH];
+	g_pSM->BuildPath(Path_SM, path, sizeof(path), "configs/modegroup.yaml");
+
+	char error[256] = {0};
+	if (m_yamlConfigParser.LoadModeGroupConfig(path, error, sizeof(error))) {
+		m_yamlConfigLoaded = true;
+		g_Logger.LogMessage("[SM] Loaded modegroup.yaml successfully");
+		
+		// Log mode groups found
+		const auto& modeGroups = m_yamlConfigParser.GetModeGroups();
+		for (const auto& group : modeGroups) {
+			g_Logger.LogMessage("[SM]   Mode group: %s - %s", group.name.c_str(), group.description.c_str());
+		}
+		
+		// Log plugins found
+		const auto& plugins = m_yamlConfigParser.GetPlugins();
+		for (const auto& plugin : plugins) {
+			g_Logger.LogMessage("[SM]   Plugin: %s (enabled=%s, mode=%s)", 
+				plugin.file.c_str(), 
+				plugin.enabled ? "true" : "false", 
+				plugin.mode.empty() ? "all" : plugin.mode.c_str());
+		}
+	} else {
+		m_yamlConfigLoaded = false;
+		// Only log error if file was explicitly not found vs parse error
+		if (error[0] != '\0') {
+			// Check if it's a file not found error vs parse error
+			if (strstr(error, "Could not open file") != nullptr) {
+				g_Logger.LogMessage("[SM] modegroup.yaml not found, using default plugin loading");
+			} else {
+				g_Logger.LogError("[SM] Failed to load modegroup.yaml: %s", error);
+				g_Logger.LogMessage("[SM] Using default plugin loading (all plugins enabled)");
+			}
+		}
+	}
+}
+
+bool CPluginManager::ShouldLoadPlugin(const char* filename)
+{
+	// If YAML config is not loaded, allow all plugins
+	if (!m_yamlConfigLoaded) {
+		return true;
+	}
+	
+	// Use the YAMLConfigParser to determine if plugin should be loaded
+	return m_yamlConfigParser.ShouldLoadPlugin(filename, m_currentMode[0] ? m_currentMode : nullptr);
+}
+
+void CPluginManager::SetCurrentMode(const char* mode)
+{
+	if (mode && mode[0]) {
+		ke::SafeStrcpy(m_currentMode, sizeof(m_currentMode), mode);
+		g_Logger.LogMessage("[SM] Current mode set to: %s", mode);
+	} else {
+		m_currentMode[0] = '\0';
+		g_Logger.LogMessage("[SM] Current mode reset to: all");
+	}
 }
 
 class PluginsListenerV1Wrapper final

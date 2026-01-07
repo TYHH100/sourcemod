@@ -58,6 +58,7 @@
 #include <bridge/include/IScriptManager.h>
 #include <am-function.h>
 #include <ReentrantList.h>
+#include "YAMLConfigParser.h"
 
 class CPlayer;
 
@@ -524,6 +525,32 @@ private:
 	IForward *m_pOnLibraryAdded;
 	IForward *m_pOnLibraryRemoved;
 	IForward *m_pOnNotifyPluginUnloaded;
+
+	// YAML configuration support
+	YAMLConfigParser m_yamlConfigParser;
+	bool m_yamlConfigLoaded;
+	char m_currentMode[64];
+
+public:
+	/**
+	 * Load mode group configuration from YAML file
+	 */
+	void LoadModeGroupConfig();
+
+	/**
+	 * Check if a plugin should be loaded based on YAML configuration
+	 */
+	bool ShouldLoadPlugin(const char* filename);
+
+	/**
+	 * Get the current mode name
+	 */
+	const char* GetCurrentMode() const { return m_currentMode; }
+
+	/**
+	 * Set the current mode (can be called from console or config)
+	 */
+	void SetCurrentMode(const char* mode);
 };
 
 extern CPluginManager g_PluginSys;
