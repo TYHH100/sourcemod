@@ -1,0 +1,23 @@
+# SourceMod Mode Group Configuration
+# This file defines different game modes with their plugin groups and configurations
+
+# Global settings
+# (reserved for future use)
+
+# Game modes section
+
+# Examples format
+#  none:
+#    plugin_directory: none
+#    cvars:
+#      mp_freeforall: "1"
+#      sv_respawn_delay: "1"
+#    cmds:
+#      - sm_say 'Test'
+#      - status
+
+gamemodes:
+  none:
+    plugin_directory: disabled/none
+    cvars:
+    cmds:

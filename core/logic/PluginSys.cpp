@@ -2080,116 +2080,217 @@ void CPluginManager::OnRootConsoleCommand(const char *cmdname, const ICommandArg
 
             const char *modeName = command->Arg(3);
             char m_ConfigFile[PLATFORM_MAX_PATH];
-            g_pSM->BuildPath(Path_SM, m_ConfigFile, sizeof(m_ConfigFile), "configs/modegroup.cfg");
+            g_pSM->BuildPath(Path_SM, m_ConfigFile, sizeof(m_ConfigFile), "configs/modegroup.yaml");
 
-            class ModeGroupSMCHandler : public ITextListener_SMC
+            class ModeGroupYAMLParser
             {
-            public:
-                ModeGroupSMCHandler(const char *targetMode, CPluginManager *pluginManager)
-                    : m_targetMode(targetMode), m_pluginManager(pluginManager), m_inTargetMode(false), m_inCfgSection(false), m_foundMode(false)
-                {
-                }
+                public:
+                    ModeGroupYAMLParser(const char *mode) : 
+                        m_targetMode(mode),
+                        m_foundMode(false),
+                        m_currentIndent(0),
+                        m_inGamemodes(false),
+                        m_inTargetMode(false),
+                        m_inCvars(false),
+                        m_inCmds(false)
+                    {}
 
-                void ReadSMC_ParseStart() override
-                {
-                    m_currentModeName.clear();
-                    m_inTargetMode = false;
-                    m_inCfgSection = false;
-                    m_foundMode = false;
-                    m_groupPath.clear();
-                    m_configCommands.clear();
-                }
-
-                SMCResult ReadSMC_NewSection(const SMCStates *states, const char *name) override
-                {
-                    if (m_inTargetMode)
+                    bool ParseFile(const char *filePath)
                     {
-                        if (strcmp(name, "cmd") == 0)
+                        FILE *fp = fopen(filePath, "r");
+                        if (!fp)
                         {
-                            m_inCfgSection = true;
-                            return SMCResult_Continue;
+                            return false;
+                        }
+
+                        char buffer[1024];
+                        int lineNum = 0;
+
+                        while (fgets(buffer, sizeof(buffer), fp))
+                        {
+                            lineNum++;
+                            std::string line(buffer);
+                            TrimWhitespace(line);
+
+                            if (line.empty() || line[0] == '#')
+                            {
+                                continue;
+                            }
+
+                            int indent = GetIndentation(line);
+                            line = line.substr(indent);
+
+                            if (indent < m_currentIndent)
+                            {
+                                HandleIndentDecrease(indent);
+                            }
+
+                            if (line.find(':') != std::string::npos)
+                            {
+                                HandleKeyValue(line, indent);
+                            }
+                            else if (line[0] == '-')
+                            {
+                                HandleListEntry(line, indent);
+                            }
+
+                            m_currentIndent = indent;
+                        }
+
+                        fclose(fp);
+                        return true;
+                    }
+
+                    bool FoundMode() const { return m_foundMode; }
+                    const std::string &GetGroupPath() const { return m_groupPath; }
+                    const std::vector<std::string> &GetConfigCommands() const { return m_configCommands; }
+
+                private:
+                    void TrimWhitespace(std::string &str)
+                    {
+                        size_t start = str.find_first_not_of(" \t\r\n");
+                        if (start == std::string::npos)
+                        {
+                            str.clear();
+                            return;
+                        }
+                        size_t end = str.find_last_not_of(" \t\r\n");
+                        str = str.substr(start, end - start + 1);
+                    }
+
+                    int GetIndentation(const std::string &line)
+                    {
+                        int indent = 0;
+                        while (indent < (int)line.length() && (line[indent] == ' ' || line[indent] == '\t'))
+                        {
+                            indent++;
+                        }
+                        return indent;
+                    }
+
+                    void HandleIndentDecrease(int newIndent)
+                    {
+                        while (m_currentIndent > newIndent)
+                        {
+                            if (m_inCmds || m_inCvars)
+                            {
+                                m_inCmds = false;
+                                m_inCvars = false;
+                            }
+                            else if (m_inTargetMode)
+                            {
+                                m_inTargetMode = false;
+                            }
+                            else if (m_inGamemodes)
+                            {
+                                m_inGamemodes = false;
+                            }
+                            m_currentIndent -= 2;
                         }
                     }
-                    else
-                    {
-                        m_currentModeName = name;
-                        if (m_currentModeName == m_targetMode)
-                        {
-                            m_inTargetMode = true;
-                            m_foundMode = true;
-                        }
-                    }
-                    return SMCResult_Continue;
-                }
 
-                SMCResult ReadSMC_KeyValue(const SMCStates *states, const char *key, const char *value) override
-                {
-                    if (m_inTargetMode)
+                    void HandleKeyValue(const std::string &line, int indent)
                     {
-                        if (m_inCfgSection)
+                        size_t colonPos = line.find(':');
+                        std::string key = line.substr(0, colonPos);
+                        TrimWhitespace(key);
+
+                        std::string value;
+                        if (colonPos + 1 < line.length())
                         {
-                            if (value)
-                            {
-                                char cmdBuffer[256];
-                                ke::SafeSprintf(cmdBuffer, sizeof(cmdBuffer), "%s %s\n", key, value);
-                                m_configCommands.push_back(cmdBuffer);
-                            }
-                            else
-                            {
-                                char cmdBuffer[256];
-                                ke::SafeSprintf(cmdBuffer, sizeof(cmdBuffer), "%s\n", key);
-                                m_configCommands.push_back(cmdBuffer);
-                            }
+                            value = line.substr(colonPos + 1);
+                            TrimWhitespace(value);
                         }
-                        else if (strcmp(key, "plugin_directory") == 0 && value)
+
+                        if (!m_inGamemodes)
+                        {
+                            if (key == "gamemodes")
+                            {
+                                m_inGamemodes = true;
+                            }
+                            return;
+                        }
+
+                        if (!m_inTargetMode)
+                        {
+                            if (key == m_targetMode)
+                            {
+                                m_inTargetMode = true;
+                                m_foundMode = true;
+                            }
+                            return;
+                        }
+
+                        if (key == "plugin_directory")
                         {
                             m_groupPath = value;
+                            return;
+                        }
+
+                        if (key == "cvars")
+                        {
+                            m_inCvars = true;
+                            m_inCmds = false;
+                            return;
+                        }
+
+                        if (key == "cmds")
+                        {
+                            m_inCmds = true;
+                            m_inCvars = false;
+                            return;
+                        }
+
+                        if (m_inCvars && !value.empty())
+                        {
+                            char cvarsBuffer[256];
+                            ke::SafeSprintf(cvarsBuffer, sizeof(cvarsBuffer), "%s %s\n", key.c_str(), value.c_str());
+                            m_configCommands.push_back(cvarsBuffer);
+                        }
+                        else if (m_inCmds && !value.empty())
+                        {
+                            char cmdsBuffer[256];
+                            ke::SafeSprintf(cmdsBuffer, sizeof(cmdsBuffer), "%s\n", key.c_str());
+                            m_configCommands.push_back(cmdsBuffer);
                         }
                     }
-                    return SMCResult_Continue;
-                }
 
-                SMCResult ReadSMC_LeavingSection(const SMCStates *states) override
-                {
-                    if (m_inCfgSection)
+                    void HandleListEntry(const std::string &line, int indent)
                     {
-                        m_inCfgSection = false;
-                    }
-                    else if (m_inTargetMode)
-                    {
-                        m_inTargetMode = false;
-                    }
-                    return SMCResult_Continue;
-                }
+                        if (!m_inCmds)
+                        {
+                            return;
+                        }
 
-                bool FoundMode() const { return m_foundMode; }
-                const std::string &GetGroupPath() const { return m_groupPath; }
-                const std::vector<std::string> &GetConfigCommands() const { return m_configCommands; }
+                        std::string cmd = line.substr(1);
+                        TrimWhitespace(cmd);
+                        if (!cmd.empty())
+                        {
+                            char cmdsBuffer[256];
+                            ke::SafeSprintf(cmdsBuffer, sizeof(cmdsBuffer), "%s\n", cmd.c_str());
+                            m_configCommands.push_back(cmdsBuffer);
+                        }
+                    }
 
-            private:
-                const char *m_targetMode;
-                CPluginManager *m_pluginManager;
-                std::string m_currentModeName;
-                bool m_inTargetMode;
-                bool m_inCfgSection;
-                bool m_foundMode;
-                std::string m_groupPath;
-                std::vector<std::string> m_configCommands;
+                    const char *m_targetMode;
+                    bool m_foundMode;
+                    int m_currentIndent;
+                    bool m_inGamemodes;
+                    bool m_inTargetMode;
+                    bool m_inCvars;
+                    bool m_inCmds;
+                    std::string m_groupPath;
+                    std::vector<std::string> m_configCommands;
             };
 
-            ModeGroupSMCHandler handler(modeName, this);
-            SMCStates states;
-            SMCError err = textparsers->ParseFile_SMC(m_ConfigFile, &handler, &states);
-
-            if (err != SMCError_Okay)
+            ModeGroupYAMLParser parser(modeName);
+            if (!parser.ParseFile(m_ConfigFile))
             {
-                const char *errStr = textparsers->GetSMCErrorString(err);
-                rootmenu->ConsolePrint("[SM] Failed to parse config file: %s (line %d, col %d): %s", 
-                    m_ConfigFile, states.line, states.col, errStr);
+                rootmenu->ConsolePrint("[SM] Failed to open config file: %s", m_ConfigFile);
                 return;
             }
 
-            if (!handler.FoundMode())
+            if (!parser.FoundMode())
             {
                 rootmenu->ConsolePrint("[SM] Mode '%s' not found.", modeName);
                 return;
@@ -2202,13 +2303,13 @@ void CPluginManager::OnRootConsoleCommand(const char *cmdname, const ICommandArg
                 rootmenu->ConsolePrint("[SM] Unloaded %d plugins from %s", num, s_CurrentGroupPath);
             }
 
-            const auto &configCommands = handler.GetConfigCommands();
+            const auto &configCommands = parser.GetConfigCommands();
             for (const auto &cmd : configCommands)
             {
                 engine->ServerCommand(cmd.c_str());
             }
 
-            const std::string &groupPath = handler.GetGroupPath();
+            const std::string &groupPath = parser.GetGroupPath();
             if (!groupPath.empty())
             {
                 char pluginsBase[PLATFORM_MAX_PATH];
