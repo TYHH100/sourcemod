@@ -10,6 +10,7 @@ for cxx in builder.targets:
     os.path.join(builder.sourcePath, 'sourcepawn', 'include'),
     os.path.join(builder.sourcePath, 'public', 'amtl', 'amtl'),
     os.path.join(builder.sourcePath, 'public', 'amtl'),
+    os.path.join(builder.sourcePath, 'core', 'yaml-cpp', 'include'),
     os.path.join(SM.mms_root, 'core', 'sourcehook')
   ]
   binary.compiler.defines += [
@@ -91,6 +92,8 @@ for cxx in builder.targets:
     'libaddrz/platform.cpp',
     'libaddrz/proc_maps.cpp',
     'PseudoAddrManager.cpp',
+    'YAMLConfigParser.cpp',
+    '../yaml-cpp/yaml.cpp',
   ]
   if binary.compiler.target.platform == 'linux':
     binary.sources += ['libaddrz/platform_linux.cpp']
