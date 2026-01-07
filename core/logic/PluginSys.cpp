@@ -44,6 +44,7 @@
 #include "Translator.h"
 #include "Logger.h"
 #include "frame_tasks.h"
+#include "TextParsers.h"
 #include <amtl/am-string.h>
 #include <bridge/include/IVEngineServerBridge.h>
 #include <bridge/include/CoreProvider.h>
@@ -836,6 +837,11 @@ void CPluginManager::CPluginIterator::OnPluginDestroyed(IPlugin *plugin)
 		mylist.remove(static_cast<CPlugin *>(plugin));
 }
 
+void CPluginManager::UnloadAll()
+{
+    Shutdown(); 
+}
+
 /******************
  * PLUGIN MANAGER *
  ******************/
@@ -989,14 +995,14 @@ IPlugin *CPluginManager::LoadPlugin(const char *path, bool debug, PluginType typ
 		ke::SafeStrcpy(error, maxlength, "Cannot load plugins outside the \"plugins\" folder");
 		return NULL;
 	}
-
+/*
 	const char *ext = libsys->GetFileExtension(path);
 	if (!ext || strcmp(ext, "smx") != 0)
 	{
 		ke::SafeStrcpy(error, maxlength, "Plugin files must have the \".smx\" file extension");
 		return NULL;
 	}
-
+*/
 	if ((res=LoadPlugin(&pl, path, true, PluginType_MapUpdated)) == LoadRes_Failure)
 	{
 		ke::SafeStrcpy(error, maxlength, pl->GetErrorMsg());
@@ -2063,9 +2069,203 @@ void CPluginManager::OnRootConsoleCommand(const char *cmdname, const ICommandArg
 						rootmenu->ConsolePrint("[SM] Failed to reload plugin %s.", name);
 				}
 			}
-
-			return;
 		}
+        else if (strcmp(cmd, "set_mode") == 0)
+        {
+            if (argcount < 4)
+            {
+                rootmenu->ConsolePrint("[SM] Usage: sm plugins set_mode <mode_name>");
+                return;
+            }
+
+            const char *modeName = command->Arg(3);
+            char m_ConfigFile[PLATFORM_MAX_PATH];
+            g_pSM->BuildPath(Path_SM, m_ConfigFile, sizeof(m_ConfigFile), "configs/modegroup.cfg");
+
+            class ModeGroupSMCHandler : public ITextListener_SMC
+            {
+            public:
+                ModeGroupSMCHandler(const char *targetMode, CPluginManager *pluginManager)
+                    : m_targetMode(targetMode), m_pluginManager(pluginManager), 
+                      m_inTargetMode(false), m_inCfgSection(false), m_inCmdSection(false), m_foundMode(false)
+                {
+                }
+
+                void ReadSMC_ParseStart() override
+                {
+                    m_currentModeName.clear();
+                    m_inTargetMode = false;
+                    m_inCfgSection = false;
+                    m_inCmdSection = false; // 重置状态
+                    m_foundMode = false;
+                    m_groupPath.clear();
+                    m_configCommands.clear();
+                    m_generalCommands.clear(); // 清空命令列表
+                }
+
+                SMCResult ReadSMC_NewSection(const SMCStates *states, const char *name) override
+                {
+                    if (m_inTargetMode)
+                    {
+                        if (strcmp(name, "cfg") == 0)
+                        {
+                            m_inCfgSection = true;
+                            return SMCResult_Continue;
+                        }
+                        // 检测 cmd 块
+                        else if (strcmp(name, "cmd") == 0 || strcmp(name, "cmds") == 0)
+                        {
+                            m_inCmdSection = true;
+                            return SMCResult_Continue;
+                        }
+                    }
+                    else
+                    {
+                        m_currentModeName = name;
+                        if (m_currentModeName == m_targetMode)
+                        {
+                            m_inTargetMode = true;
+                            m_foundMode = true;
+                        }
+                    }
+                    return SMCResult_Continue;
+                }
+
+                SMCResult ReadSMC_KeyValue(const SMCStates *states, const char *key, const char *value) override
+                {
+                    if (!m_inTargetMode)
+                        return SMCResult_Continue;
+
+                    // 处理 cfg 块 (原逻辑)
+                    if (m_inCfgSection)
+                    {
+                        char cmdBuffer[256];
+                        if (value && value[0] != '\0')
+                            ke::SafeSprintf(cmdBuffer, sizeof(cmdBuffer), "%s %s\n", key, value);
+                        else
+                            ke::SafeSprintf(cmdBuffer, sizeof(cmdBuffer), "%s\n", key);
+                        
+                        m_configCommands.push_back(cmdBuffer);
+                    }
+                    // 处理 cmd 块 (新逻辑)
+                    else if (m_inCmdSection)
+                    {
+                        char cmdBuffer[256];
+                        if (value && value[0] != '\0')
+                        {
+                            // 格式化为 "key value\n"
+                            ke::SafeSprintf(cmdBuffer, sizeof(cmdBuffer), "%s %s\n", key, value);
+                        }
+                        else
+                        {
+                            // 格式化为 "key\n"
+                            ke::SafeSprintf(cmdBuffer, sizeof(cmdBuffer), "%s\n", key);
+                        }
+                        m_generalCommands.push_back(cmdBuffer);
+                    }
+                    // 处理 group 路径
+                    else if (strcmp(key, "group") == 0 && value)
+                    {
+                        m_groupPath = value;
+                    }
+                    
+                    return SMCResult_Continue;
+                }
+
+                SMCResult ReadSMC_LeavingSection(const SMCStates *states) override
+                {
+                    if (m_inCfgSection)
+                    {
+                        m_inCfgSection = false;
+                    }
+                    else if (m_inCmdSection)
+                    {
+                        m_inCmdSection = false;
+                    }
+                    else if (m_inTargetMode)
+                    {
+                        m_inTargetMode = false;
+                    }
+                    return SMCResult_Continue;
+                }
+
+                bool FoundMode() const { return m_foundMode; }
+                const std::string &GetGroupPath() const { return m_groupPath; }
+                const std::vector<std::string> &GetConfigCommands() const { return m_configCommands; }
+                const std::vector<std::string> &GetGeneralCommands() const { return m_generalCommands; }
+
+            private:
+                const char *m_targetMode;
+                CPluginManager *m_pluginManager;
+                std::string m_currentModeName;
+                bool m_inTargetMode;
+                bool m_inCfgSection;
+                bool m_inCmdSection; // 新增标记
+                bool m_foundMode;
+                std::string m_groupPath;
+                std::vector<std::string> m_configCommands;
+                std::vector<std::string> m_generalCommands; // 新增存储
+            };
+
+            ModeGroupSMCHandler handler(modeName, this);
+            SMCStates states;
+            SMCError err = textparsers->ParseFile_SMC(m_ConfigFile, &handler, &states);
+
+            if (err != SMCError_Okay)
+            {
+                const char *errStr = textparsers->GetSMCErrorString(err);
+                rootmenu->ConsolePrint("[SM] Failed to parse config file: %s (line %d, col %d): %s", 
+                    m_ConfigFile, states.line, states.col, errStr);
+                return;
+            }
+
+            if (!handler.FoundMode())
+            {
+                rootmenu->ConsolePrint("[SM] Mode '%s' not found.", modeName);
+                return;
+            }
+
+            // 1. 卸载旧插件 (Unload Plugins)
+            static char s_CurrentGroupPath[PLATFORM_MAX_PATH] = "";
+            if (s_CurrentGroupPath[0] != '\0')
+            {
+                int num = this->UnloadPluginsByPath(s_CurrentGroupPath);
+                rootmenu->ConsolePrint("[SM] Unloaded %d plugins from %s", num, s_CurrentGroupPath);
+            }
+
+            // 2. 执行 cmd 块中的命令 (Execute General Commands)
+            // 建议放在加载新插件之前，这样可以清理环境，或者设置依赖
+            const auto &generalCommands = handler.GetGeneralCommands();
+            for (const auto &cmdStr : generalCommands)
+            {
+                engine->ServerCommand(cmdStr.c_str());
+            }
+
+            // 3. 执行 cfg 块中的参数 (Execute Config CVars)
+            // 也可以放在加载插件之后，看你具体需求。原代码逻辑是先执行配置。
+            const auto &configCommands = handler.GetConfigCommands();
+            for (const auto &cmdStr : configCommands)
+            {
+                engine->ServerCommand(cmdStr.c_str());
+            }
+
+            // 4. 加载新插件 (Load New Plugins)
+            const std::string &groupPath = handler.GetGroupPath();
+            if (!groupPath.empty())
+            {
+                char pluginsBase[PLATFORM_MAX_PATH];
+                g_pSM->BuildPath(Path_SM, pluginsBase, sizeof(pluginsBase), "plugins");
+                
+                LoadPluginsFromDir(pluginsBase, groupPath.c_str());
+                ke::SafeStrcpy(s_CurrentGroupPath, sizeof(s_CurrentGroupPath), groupPath.c_str());
+
+                LoadAll_SecondPass();
+                AllPluginsLoaded();
+            }
+
+            rootmenu->ConsolePrint("[SM] Mode '%s' is now active.", modeName);
+            return;
+        }
 	}
 
 	/* Draw the main menu */
@@ -2079,6 +2279,7 @@ void CPluginManager::OnRootConsoleCommand(const char *cmdname, const ICommandArg
 	rootmenu->DrawGenericOption("reload", "Reloads a plugin");
 	rootmenu->DrawGenericOption("unload", "Unload a plugin");
 	rootmenu->DrawGenericOption("unload_all", "Unloads all plugins");
+	rootmenu->DrawGenericOption("set_mode", "Switches plugin group and config by mode name");
 }
 
 bool CPluginManager::ReloadPlugin(CPlugin *pl, bool print)
@@ -2222,11 +2423,33 @@ void CPluginManager::AllPluginsLoaded()
 		(*iter)->Call_OnAllPluginsLoaded();
 }
 
-void CPluginManager::UnloadAll()
+int CPluginManager::UnloadPluginsByPath(const char *path_prefix)
 {
-	for (PluginIter iter(m_plugins); !iter.done(); iter.next()) {
-		UnloadPlugin((*iter));
-	}
+    if (!path_prefix || path_prefix[0] == '\0')
+        return 0;
+
+    int unloaded_count = 0;
+    std::list<CPlugin *> to_unload;
+
+    for (PluginIter iter(m_plugins); !iter.done(); iter.next())
+    {
+        CPlugin *pl = (*iter);
+        const char *plFilename = pl->GetFilename();
+
+        if (strncmp(plFilename, path_prefix, strlen(path_prefix)) == 0)
+        {
+            to_unload.push_back(pl);
+        }
+    }
+
+    for (auto pl : to_unload)
+    {
+        if (UnloadPlugin(pl))
+        {
+            unloaded_count++;
+        }
+    }
+    return unloaded_count;
 }
 
 int CPluginManager::GetOrderOfPlugin(IPlugin *pl)
